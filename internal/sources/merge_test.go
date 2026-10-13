@@ -76,3 +76,16 @@ func TestMergeDedupesSamePathAcrossSources(t *testing.T) {
 	require.Len(t, got.Ordered(), 1)
 	require.Equal(t, "herdr", got.Ordered()[0].Source)
 }
+
+// A config session carries startup, preview, and window settings, so it is
+// matched by name only and never dropped in favour of a discovered entry that
+// happens to hold the same path under a different name.
+func TestMergeKeepsConfigSessionAtDiscoveredPath(t *testing.T) {
+	srcs := []Source{
+		staticSource{"herdr", []model.Session{{Source: "herdr", Name: "repo:branch", Path: "/p", WorkspaceID: "w1"}}},
+		staticSource{"config", []model.Session{{Source: "config", Name: "vault", Path: "/p"}}},
+	}
+	got, err := Merge(context.Background(), srcs, []string{"herdr", "config"}, nil, false, true)
+	require.NoError(t, err)
+	require.Len(t, got.Ordered(), 2)
+}

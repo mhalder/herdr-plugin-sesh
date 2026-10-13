@@ -41,12 +41,16 @@ func Merge(ctx context.Context, srcs []Source, order []string, blacklist []strin
 		}
 	}
 	out := model.NewSessions()
-	// Config sessions are addressed by name, so a config session shadows any
-	// later discovered session with the same name. Every other source is a
-	// directory (or a herdr workspace labelled like one) and is deduplicated by
-	// path, so unrelated directories that share a folder name no longer collapse.
-	// Both sets are keyed by machine, so remote workspaces with the same name or
-	// path stay distinct.
+	// Config sessions are addressed by name: a config session shadows any later
+	// discovered session with the same name, whatever its path. Every other
+	// source is a directory (or a herdr workspace labelled like one) and is
+	// deduplicated by path, so unrelated directories that share a folder name no
+	// longer collapse. A config session keeps its own path out of the path set, so
+	// it is never dropped merely because a discovered entry already held that
+	// path; it goes only when a session already claimed its name. All sets are
+	// keyed by machine, so remote workspaces with the same name or path stay
+	// distinct.
+	seenName := map[[2]string]bool{}
 	seenConfigName := map[[2]string]bool{}
 	seenPath := map[[2]string]bool{}
 	bl := compile(blacklist)
@@ -62,17 +66,16 @@ func Merge(ctx context.Context, srcs []Source, order []string, blacklist []strin
 			if dedupe {
 				id := func(k string) [2]string { return [2]string{sess.Machine, k} }
 				if sess.Source == "config" {
-					if sess.Name != "" && seenConfigName[id(sess.Name)] {
+					key := sess.Name
+					if key == "" {
+						key = sess.Path
+					}
+					if seenName[id(key)] {
 						continue
 					}
+					seenName[id(key)] = true
 					if sess.Name != "" {
 						seenConfigName[id(sess.Name)] = true
-					}
-					if sess.Path != "" {
-						if seenPath[id(sess.Path)] {
-							continue
-						}
-						seenPath[id(sess.Path)] = true
 					}
 				} else {
 					if sess.Name != "" && seenConfigName[id(sess.Name)] {
@@ -86,6 +89,9 @@ func Merge(ctx context.Context, srcs []Source, order []string, blacklist []strin
 						continue
 					}
 					seenPath[id(key)] = true
+					if sess.Name != "" {
+						seenName[id(sess.Name)] = true
+					}
 				}
 			}
 			out.Add(sess)
