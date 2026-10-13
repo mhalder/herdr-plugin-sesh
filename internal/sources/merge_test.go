@@ -38,3 +38,41 @@ func TestParseZoxideLine(t *testing.T) {
 	require.Equal(t, "/tmp/my app", s.Path)
 	assert.Equal(t, "my app", s.Name)
 }
+
+// Directories from different sources that share a folder name must not collapse:
+// zoxide names entries after their last path component, so name-based dedupe
+// silently dropped every same-named directory but the highest ranked one.
+func TestMergeDedupesDiscoveredSessionsByPath(t *testing.T) {
+	srcs := []Source{staticSource{"zoxide", []model.Session{
+		{Source: "zoxide", Name: "mnemex", Path: "/a/mnemex", Score: 9},
+		{Source: "zoxide", Name: "mnemex", Path: "/b/mnemex", Score: 3},
+	}}}
+	got, err := Merge(context.Background(), srcs, []string{"zoxide"}, nil, false, true)
+	require.NoError(t, err)
+	require.Len(t, got.Ordered(), 2)
+}
+
+// A herdr workspace label that happens to equal a discovered folder name must
+// not hide an unrelated directory.
+func TestMergeHerdrLabelDoesNotHideOtherPath(t *testing.T) {
+	srcs := []Source{
+		staticSource{"herdr", []model.Session{{Source: "herdr", Name: "vault", Path: "/ws/vault", WorkspaceID: "w1"}}},
+		staticSource{"zoxide", []model.Session{{Source: "zoxide", Name: "vault", Path: "/other/vault", Score: 5}}},
+	}
+	got, err := Merge(context.Background(), srcs, []string{"herdr", "zoxide"}, nil, false, true)
+	require.NoError(t, err)
+	require.Len(t, got.Ordered(), 2)
+}
+
+// The same path from two sources is still a duplicate, and the first source in
+// order wins so a live herdr workspace shadows its zoxide entry.
+func TestMergeDedupesSamePathAcrossSources(t *testing.T) {
+	srcs := []Source{
+		staticSource{"herdr", []model.Session{{Source: "herdr", Name: "api", Path: "/p", WorkspaceID: "w1"}}},
+		staticSource{"zoxide", []model.Session{{Source: "zoxide", Name: "api", Path: "/p", Score: 5}}},
+	}
+	got, err := Merge(context.Background(), srcs, []string{"herdr", "zoxide"}, nil, false, true)
+	require.NoError(t, err)
+	require.Len(t, got.Ordered(), 1)
+	require.Equal(t, "herdr", got.Ordered()[0].Source)
+}
