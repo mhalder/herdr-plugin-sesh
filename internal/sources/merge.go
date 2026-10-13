@@ -41,10 +41,12 @@ func Merge(ctx context.Context, srcs []Source, order []string, blacklist []strin
 		}
 	}
 	out := model.NewSessions()
-	// Config sessions are addressed by name, so a config session shadows any
-	// later discovered session with the same name. Every other source is a
-	// directory (or a herdr workspace labelled like one) and is deduplicated by
-	// path, so unrelated directories that share a folder name no longer collapse.
+	// Config sessions are addressed by name: a config session shadows any later
+	// discovered session with the same name, whatever its path. Every other
+	// source is a directory (or a herdr workspace labelled like one) and is
+	// deduplicated by path, so unrelated directories that share a folder name no
+	// longer collapse. Config sessions stay out of that path set, so a config
+	// session is never dropped in favour of a discovered directory.
 	seenConfigName := map[string]bool{}
 	seenPath := map[string]bool{}
 	bl := compile(blacklist)
@@ -59,18 +61,14 @@ func Merge(ctx context.Context, srcs []Source, order []string, blacklist []strin
 			}
 			if dedupe {
 				if sess.Source == "config" {
-					if sess.Name != "" && seenConfigName[sess.Name] {
+					key := sess.Name
+					if key == "" {
+						key = sess.Path
+					}
+					if seenConfigName[key] {
 						continue
 					}
-					if sess.Name != "" {
-						seenConfigName[sess.Name] = true
-					}
-					if sess.Path != "" {
-						if seenPath[sess.Path] {
-							continue
-						}
-						seenPath[sess.Path] = true
-					}
+					seenConfigName[key] = true
 				} else {
 					if sess.Name != "" && seenConfigName[sess.Name] {
 						continue
