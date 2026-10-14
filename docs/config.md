@@ -161,13 +161,13 @@ Picker shortcuts, appearance, sorting, and history are documented in
 | --- | --- |
 | `cache` | Default `false`. Caches normal deduplicated `list` results for five seconds in `HERDR_PLUGIN_STATE_DIR`, scoped to the resolved config file. It does not cache `list --blacklisted`, `list --hide-duplicates=false`, `picker`, or `connect`. |
 | `source_order` | Default order: `herdr`, `config`, `zoxide`, `dir`. Reorder these sources; unknown or duplicate names are rejected and omitted sources are appended. |
-| `blacklist` | Default `[]`. Treats each value as a regular expression matched against workspace names. Normal listings hide matches; `list --blacklisted` shows them. Invalid regexes are rejected. |
+| `blacklist` | Default `[]`. Treats each value as a regular expression matched against workspace names and, when a name carries path components (such as a zoxide entry named with `path_components`), its last component. Normal listings hide matches; `list --blacklisted` shows them. Invalid regexes are rejected. |
 
 ### `[naming]`
 
 | Field | Runtime effect |
 | --- | --- |
-| `path_components` | Sets the number of path components used by the directory-name fallback for a newly created direct-path workspace. Git repositories keep their repository-derived name. Must be at least `1` (the default). |
+| `path_components` | Sets the number of trailing path components used for the directory-name fallback. Applies to a newly created direct-path workspace and to zoxide entries, so a picker row and the workspace label it creates agree. Git repositories keep their repository-derived name. Must be at least `1` (the default). |
 
 ### `[history]`
 

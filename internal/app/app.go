@@ -132,7 +132,7 @@ func (a *App) collectPickerWithClient(ctx context.Context, cfg config.Config, he
 }
 
 func (a *App) collectFrom(ctx context.Context, cfg config.Config, target string, herdrSource sources.Source) ([]model.Session, error) {
-	srcs := []sources.Source{herdrSource, sources.ConfigSessions{Config: cfg}, sources.Zoxide{}}
+	srcs := []sources.Source{herdrSource, sources.ConfigSessions{Config: cfg}, sources.Zoxide{DirLength: cfg.DirLength}}
 	if target != "" {
 		srcs = append(srcs, sources.DirectPath{
 			Path:  target,
@@ -199,7 +199,7 @@ func (a *App) list(ctx context.Context, args []string) error {
 			return a.printSessions(cached, *jsonOut)
 		}
 	}
-	ss, err := sources.Merge(ctx, []sources.Source{ignoreSource{sources.HerdrWorkspaces{Client: herdr.NewCLIClient()}}, sources.ConfigSessions{Config: cfg}, sources.Zoxide{}}, cfg.SortOrder, cfg.Blacklist, *blacklisted, *hideDup)
+	ss, err := sources.Merge(ctx, []sources.Source{ignoreSource{sources.HerdrWorkspaces{Client: herdr.NewCLIClient()}}, sources.ConfigSessions{Config: cfg}, sources.Zoxide{DirLength: cfg.DirLength}}, cfg.SortOrder, cfg.Blacklist, *blacklisted, *hideDup)
 	if err != nil {
 		return err
 	}

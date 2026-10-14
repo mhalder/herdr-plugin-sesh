@@ -3,6 +3,7 @@ package sources
 import (
 	"context"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/fullerzz/herdr-plugin-sesh/internal/model"
@@ -53,7 +54,10 @@ func Merge(ctx context.Context, srcs []Source, order []string, blacklist []strin
 	for _, name := range ordered {
 		ss := by[name]
 		for _, sess := range ss.Ordered() {
-			isbl := isBlacklisted(bl, sess.Name)
+			// A name may carry path components (zoxide entries use the trailing
+			// path_components), so anchored folder patterns such as ^target$ must
+			// also be tested against the last segment.
+			isbl := isBlacklisted(bl, sess.Name) || isBlacklisted(bl, baseName(sess.Name))
 			if len(bl) > 0 || onlyBlacklisted {
 				if isbl != onlyBlacklisted {
 					continue
@@ -104,4 +108,13 @@ func isBlacklisted(res []*regexp.Regexp, name string) bool {
 		}
 	}
 	return false
+}
+
+// baseName returns the final slash-separated segment of a session name.
+func baseName(name string) string {
+	name = strings.TrimRight(name, "/")
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		return name[i+1:]
+	}
+	return name
 }

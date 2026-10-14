@@ -31,17 +31,40 @@ func TestMergeOrderBlacklistDedupe(t *testing.T) {
 	require.Equal(t, "config", os[0].Source)
 	assert.Equal(t, "api", os[0].Name)
 }
-func TestParseZoxideLine(t *testing.T) {
-	s, ok := ParseZoxideLine("42.5 /tmp/my app")
-	require.True(t, ok)
-	require.InDelta(t, 42.5, s.Score, 0)
-	require.Equal(t, "/tmp/my app", s.Path)
-	assert.Equal(t, "my app", s.Name)
+func TestMergeKeepsSameBasenameZoxideEntriesWithDirLength(t *testing.T) {
+	z := Zoxide{
+		Runner: func(context.Context) (string, error) {
+			return "9 /home/a/mnemex\n3 /src/b/mnemex\n", nil
+		},
+		DirLength: 2,
+	}
+	got, err := Merge(context.Background(), []Source{z}, []string{"zoxide"}, nil, false, true)
+	require.NoError(t, err)
+	ordered := got.Ordered()
+	names := make([]string, 0, len(ordered))
+	for _, s := range ordered {
+		names = append(names, s.Name)
+	}
+	assert.ElementsMatch(t, []string{"a/mnemex", "b/mnemex"}, names)
+}
+
+// An anchored folder pattern must still hide a directory whose name gained path
+// components, matching the last segment as well as the full name.
+func TestMergeBlacklistMatchesLastPathComponent(t *testing.T) {
+	srcs := []Source{staticSource{"zoxide", []model.Session{
+		{Source: "zoxide", Name: "halderm/target", Path: "/home/halderm/target"},
+		{Source: "zoxide", Name: "halderm/keep", Path: "/home/halderm/keep"},
+	}}}
+	got, err := Merge(context.Background(), srcs, []string{"zoxide"}, []string{"^target$"}, false, true)
+	require.NoError(t, err)
+	os := got.Ordered()
+	require.Len(t, os, 1)
+	assert.Equal(t, "halderm/keep", os[0].Name)
 }
 
 // Directories from different sources that share a folder name must not collapse:
-// zoxide names entries after their last path component, so name-based dedupe
-// silently dropped every same-named directory but the highest ranked one.
+// zoxide names entries after their trailing path components, so name-based
+// dedupe silently dropped every same-named directory but the highest ranked one.
 func TestMergeDedupesDiscoveredSessionsByPath(t *testing.T) {
 	srcs := []Source{staticSource{"zoxide", []model.Session{
 		{Source: "zoxide", Name: "mnemex", Path: "/a/mnemex", Score: 9},
