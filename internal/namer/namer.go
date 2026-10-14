@@ -35,7 +35,7 @@ func (n Namer) Name(ctx context.Context, path string, dirLength int) string {
 		}
 		return filepath.Base(root)
 	}
-	return lastComponents(path, dirLength)
+	return LastComponents(path, dirLength)
 }
 func repoName(remote string) string {
 	remote = strings.TrimSuffix(remote, ".git")
@@ -49,7 +49,12 @@ func repoName(remote string) string {
 	re := regexp.MustCompile(`[^A-Za-z0-9._/-]+`)
 	return re.ReplaceAllString(name, "-")
 }
-func lastComponents(path string, n int) string {
+
+// LastComponents returns the final n path components of path joined by the OS
+// separator, falling back to the whole cleaned path when it has fewer than n
+// components. It is shared by the direct-path namer and the zoxide source so
+// both name a directory the same way.
+func LastComponents(path string, n int) string {
 	p := filepath.Clean(path)
 	parts := strings.Split(p, string(filepath.Separator))
 	out := []string{}
@@ -60,6 +65,9 @@ func lastComponents(path string, n int) string {
 	}
 	if len(out) == 0 {
 		return filepath.Base(p)
+	}
+	if n < 1 {
+		n = 1
 	}
 	if n > len(out) {
 		n = len(out)

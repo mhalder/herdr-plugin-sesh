@@ -4,15 +4,20 @@ import (
 	"bufio"
 	"context"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/fullerzz/herdr-plugin-sesh/internal/model"
+	"github.com/fullerzz/herdr-plugin-sesh/internal/namer"
 )
 
+// Zoxide lists directories tracked by zoxide. DirLength mirrors the
+// [naming] path_components setting so a picker row reads the same as the direct
+// path namer would name the workspace; values below 1 fall back to the
+// basename.
 type Zoxide struct {
-	Runner func(context.Context) (string, error)
+	Runner    func(context.Context) (string, error)
+	DirLength int
 }
 
 func (Zoxide) Name() string { return "zoxide" }
@@ -32,13 +37,17 @@ func (z Zoxide) List(ctx context.Context) (model.Sessions, error) {
 	}
 	scanner := bufio.NewScanner(strings.NewReader(raw))
 	for scanner.Scan() {
-		if s, ok := ParseZoxideLine(scanner.Text()); ok {
+		if s, ok := ParseZoxideLine(scanner.Text(), z.DirLength); ok {
 			out.Add(s)
 		}
 	}
 	return out, nil
 }
-func ParseZoxideLine(line string) (model.Session, bool) {
+
+// ParseZoxideLine parses one `zoxide query -l -s` line into a session. The path
+// is named with the trailing dirLength components, matching the direct-path
+// namer so a picker row and the created workspace label agree.
+func ParseZoxideLine(line string, dirLength int) (model.Session, bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return model.Session{}, false
@@ -52,7 +61,10 @@ func ParseZoxideLine(line string) (model.Session, bool) {
 			path = strings.Join(fields[1:], " ")
 		}
 	}
-	return model.Session{Source: "zoxide", Name: filepath.Base(path), Path: path, Score: score}, true
+	if dirLength < 1 {
+		dirLength = 1
+	}
+	return model.Session{Source: "zoxide", Name: namer.LastComponents(path, dirLength), Path: path, Score: score}, true
 }
 func AddPath(ctx context.Context, path string) {
 	//nolint:gosec // zoxide is a fixed local integration; path is a single argv value.
