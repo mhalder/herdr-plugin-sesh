@@ -189,6 +189,18 @@ func TestCLIClientIncludesStderrOnCommandFailure(t *testing.T) {
 	require.ErrorContains(t, err, "boom")
 }
 
+func TestIsWorkspaceNotFound(t *testing.T) {
+	stderr := []byte(`{"error":{"code":"workspace_not_found","message":"workspace wCJ not found"},"id":"cli:workspace:focus"}`)
+	missing := &CLIClient{Bin: "/bin/herdr", Runner: fixedRunner{stderr: stderr, err: errors.New("exit status 1")}}
+	err := missing.WorkspaceFocus(context.Background(), "wCJ")
+	require.Error(t, err)
+	assert.True(t, IsWorkspaceNotFound(err))
+
+	other := &CLIClient{Bin: "/bin/herdr", Runner: fixedRunner{stderr: []byte("boom"), err: errors.New("exit status 1")}}
+	assert.False(t, IsWorkspaceNotFound(other.WorkspaceFocus(context.Background(), "w1")))
+	assert.False(t, IsWorkspaceNotFound(nil))
+}
+
 func TestCLIClientConstructsPaneSplit(t *testing.T) {
 	rr := &recRunner{}
 	c := &CLIClient{Bin: "/bin/herdr", Runner: rr}

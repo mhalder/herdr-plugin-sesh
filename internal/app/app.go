@@ -430,21 +430,38 @@ func (a *App) last(ctx context.Context, _ []string) error {
 		return err
 	}
 	currentWorkspaceID := os.Getenv("HERDR_WORKSPACE_ID")
-	history, err := state.LoadHistory(historyDir)
-	if err != nil {
-		return err
+	client := herdr.NewCLIClient()
+	dropped := map[string]bool{}
+	for {
+		history, err := state.LoadHistory(historyDir)
+		if err != nil {
+			return err
+		}
+		id, ok := history.PreviousWorkspace(currentWorkspaceID)
+		if !ok {
+			return errors.New("no previous workspace recorded")
+		}
+		err = client.WorkspaceFocus(ctx, id)
+		if err == nil {
+			if err := state.RecordSwitch(historyDir, currentWorkspaceID, id, history.Revision); err != nil {
+				a.warnf("could not record workspace history: %v", err)
+			}
+			return nil
+		}
+		if !herdr.IsWorkspaceNotFound(err) {
+			return err
+		}
+		// The entry outlived its workspace, such as a close the watcher missed
+		// while disconnected: drop it and fall back to the next entry.
+		if dropped[id] {
+			return err
+		}
+		dropped[id] = true
+		if err := retryHistoryMutation(ctx, func() error { return state.RemoveWorkspace(historyDir, id) }); err != nil {
+			a.warnf("could not drop closed workspace %q from history: %v", id, err)
+			return err
+		}
 	}
-	id, ok := history.PreviousWorkspace(currentWorkspaceID)
-	if !ok {
-		return errors.New("no previous workspace recorded")
-	}
-	if err := herdr.NewCLIClient().WorkspaceFocus(ctx, id); err != nil {
-		return err
-	}
-	if err := state.RecordSwitch(historyDir, currentWorkspaceID, id, history.Revision); err != nil {
-		a.warnf("could not record workspace history: %v", err)
-	}
-	return nil
 }
 
 // historyRevision captures history before a focus request for RecordSwitch.
@@ -555,8 +572,13 @@ func (a *App) watchHistory(ctx context.Context) (err error) {
 			a.warnf("could not update last-workspace marker: %v", err)
 		}
 	}
-	return herdr.WatchWorkspaceEvents(ctx, socketPath,
-		func(workspaceID string) error {
+	return herdr.WatchWorkspaceEvents(ctx, socketPath, herdr.WorkspaceHooks{
+		// The snapshot is authoritative, so history entries for workspaces that
+		// closed while this watcher was not running are dropped at startup.
+		Reconcile: func(present map[string]bool) error {
+			return retryHistoryMutation(ctx, func() error { return state.PruneWorkspaces(historyDir, present) })
+		},
+		Focused: func(workspaceID string) error {
 			if err := retryHistoryMutation(ctx, func() error { return state.Record(historyDir, workspaceID) }); err != nil {
 				return err
 			}
@@ -564,7 +586,7 @@ func (a *App) watchHistory(ctx context.Context) (err error) {
 			syncMarker()
 			return nil
 		},
-		func(workspaceID string) error {
+		Closed: func(workspaceID string) error {
 			if err := retryHistoryMutation(ctx, func() error { return state.RemoveWorkspace(historyDir, workspaceID) }); err != nil {
 				return err
 			}
@@ -574,7 +596,7 @@ func (a *App) watchHistory(ctx context.Context) (err error) {
 			syncMarker()
 			return nil
 		},
-	)
+	})
 }
 
 // historyWatcherHandoff bounds how long a startup hook waits for the previous

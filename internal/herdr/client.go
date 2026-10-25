@@ -308,6 +308,12 @@ func (c *CLIClient) WorkspaceFocus(ctx context.Context, id string) error {
 	return err
 }
 
+// IsWorkspaceNotFound reports whether err means the workspace no longer exists,
+// such as a history entry for a workspace closed while no watcher was running.
+func IsWorkspaceNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "workspace_not_found")
+}
+
 // WorkspaceReportToken sets a custom workspace metadata token; an empty value clears it.
 func (c *CLIClient) WorkspaceReportToken(ctx context.Context, id, source, name, value string) error {
 	args := []string{"workspace", "report-metadata", id, "--source", source, "--token", name + "=" + value}

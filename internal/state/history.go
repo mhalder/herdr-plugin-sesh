@@ -204,6 +204,33 @@ func RemoveWorkspace(dir, workspaceID string) error {
 	})
 }
 
+// PruneWorkspaces drops history entries whose workspace is absent from
+// present, which is the server's authoritative set of open workspaces. It
+// writes only when something is dropped, so a clean reconcile leaves the
+// revision untouched for a concurrent RecordSwitch.
+func PruneWorkspaces(dir string, present map[string]bool) error {
+	if dir == "" {
+		return nil
+	}
+	return withHistoryLock(dir, func() error {
+		h, err := loadHistoryForWrite(dir)
+		if err != nil {
+			return err
+		}
+		kept := make([]string, 0, len(h.Workspaces))
+		for _, id := range h.Workspaces {
+			if present[id] {
+				kept = append(kept, id)
+			}
+		}
+		if len(kept) == len(h.Workspaces) {
+			return nil
+		}
+		h.Workspaces = kept
+		return writeHistory(dir, h)
+	})
+}
+
 func withHistoryLock(dir string, fn func() error) (err error) {
 	//nolint:gosec // dir is the trusted plugin-owned state directory supplied to this API.
 	if err := os.MkdirAll(dir, 0700); err != nil {

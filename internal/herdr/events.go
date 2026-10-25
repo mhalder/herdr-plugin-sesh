@@ -45,15 +45,29 @@ type sessionSnapshot struct {
 	WorkspaceIDs       map[string]bool
 }
 
+// WorkspaceHooks receive reconciled Herdr workspace lifecycle state.
+type WorkspaceHooks struct {
+	// Focused records a workspace as the most recent one. It runs for the
+	// focused workspace found at startup and for every focus event.
+	Focused func(string) error
+	// Closed removes a closed workspace from history.
+	Closed func(string) error
+	// Reconcile, when set, runs once after the subscription, with the IDs of
+	// every workspace the server still has, before any event is applied. It lets
+	// history drop workspaces that closed while no watcher was connected, such
+	// as during a server restart.
+	Reconcile func(present map[string]bool) error
+}
+
 // WatchWorkspaceEvents returns when the connection fails or the stream ends;
 // a server closing an established stream is a normal shutdown and returns nil.
 // It never reconnects: a restarted server needs a fresh watcher, so callers
 // release their election and let a later lifecycle hook start one.
-func WatchWorkspaceEvents(ctx context.Context, socketPath string, onFocused, onClosed func(string) error) error {
+func WatchWorkspaceEvents(ctx context.Context, socketPath string, hooks WorkspaceHooks) error {
 	if socketPath == "" {
 		return errors.New("HERDR_SOCKET_PATH is required")
 	}
-	err := watchWorkspaceEvents(ctx, socketPath, onFocused, onClosed)
+	err := watchWorkspaceEvents(ctx, socketPath, hooks)
 	// Cancellation closes in-flight connections, so report it rather than the
 	// resulting read error.
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -62,7 +76,7 @@ func WatchWorkspaceEvents(ctx context.Context, socketPath string, onFocused, onC
 	return err
 }
 
-func watchWorkspaceEvents(ctx context.Context, socketPath string, onFocused, onClosed func(string) error) error {
+func watchWorkspaceEvents(ctx context.Context, socketPath string, hooks WorkspaceHooks) error {
 	// Protocol 21 does not replay, so start buffering before any other request.
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	if err != nil {
@@ -113,8 +127,15 @@ func watchWorkspaceEvents(ctx context.Context, socketPath string, onFocused, onC
 	if err != nil {
 		return err
 	}
-	if snapshot.FocusedWorkspaceID != "" {
-		if err := onFocused(snapshot.FocusedWorkspaceID); err != nil {
+	// Reconcile first so the prune runs against the same snapshot that gates
+	// the buffered events, and cannot drop the focus recorded just below.
+	if hooks.Reconcile != nil {
+		if err := hooks.Reconcile(snapshot.WorkspaceIDs); err != nil {
+			return err
+		}
+	}
+	if snapshot.FocusedWorkspaceID != "" && hooks.Focused != nil {
+		if err := hooks.Focused(snapshot.FocusedWorkspaceID); err != nil {
 			return err
 		}
 	}
@@ -130,7 +151,7 @@ func watchWorkspaceEvents(ctx context.Context, socketPath string, onFocused, onC
 			}
 			current = &snapshot
 		}
-		return applyWorkspaceEvents(events, current, onFocused, onClosed)
+		return applyWorkspaceEvents(events, current, hooks)
 	}
 
 	for {
@@ -182,7 +203,7 @@ func drainBufferedEvents(events <-chan workspaceEvent, buffered []workspaceEvent
 	}
 }
 
-func applyWorkspaceEvents(events []workspaceEvent, snapshot *sessionSnapshot, onFocused, onClosed func(string) error) error {
+func applyWorkspaceEvents(events []workspaceEvent, snapshot *sessionSnapshot, hooks WorkspaceHooks) error {
 	for _, event := range events {
 		if snapshot != nil {
 			exists := snapshot.WorkspaceIDs[event.Data.WorkspaceID]
@@ -190,22 +211,28 @@ func applyWorkspaceEvents(events []workspaceEvent, snapshot *sessionSnapshot, on
 				continue
 			}
 		}
-		if err := applyWorkspaceEvent(event, onFocused, onClosed); err != nil {
+		if err := applyWorkspaceEvent(event, hooks); err != nil {
 			return err
 		}
 	}
-	if snapshot != nil && snapshot.FocusedWorkspaceID != "" {
-		return onFocused(snapshot.FocusedWorkspaceID)
+	if snapshot != nil && snapshot.FocusedWorkspaceID != "" && hooks.Focused != nil {
+		return hooks.Focused(snapshot.FocusedWorkspaceID)
 	}
 	return nil
 }
 
-func applyWorkspaceEvent(event workspaceEvent, onFocused, onClosed func(string) error) error {
+func applyWorkspaceEvent(event workspaceEvent, hooks WorkspaceHooks) error {
 	switch event.Event {
 	case "workspace_focused":
-		return onFocused(event.Data.WorkspaceID)
+		if hooks.Focused == nil {
+			return nil
+		}
+		return hooks.Focused(event.Data.WorkspaceID)
 	case "workspace_closed":
-		return onClosed(event.Data.WorkspaceID)
+		if hooks.Closed == nil {
+			return nil
+		}
+		return hooks.Closed(event.Data.WorkspaceID)
 	default:
 		return nil
 	}

@@ -35,6 +35,45 @@ func TestSessionHistoryDirIsolatesSockets(t *testing.T) {
 	assert.Equal(t, []string{"second-only"}, second.Workspaces)
 }
 
+func TestPruneWorkspacesDropsClosedWorkspaces(t *testing.T) {
+	d := t.TempDir()
+	require.NoError(t, SaveHistory(d, History{Workspaces: []string{"open1", "closed1", "open2", "closed2"}, Revision: 4}))
+
+	require.NoError(t, PruneWorkspaces(d, map[string]bool{"open1": true, "open2": true}))
+
+	h, err := LoadHistory(d)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"open1", "open2"}, h.Workspaces)
+	assert.Equal(t, uint64(5), h.Revision)
+}
+
+func TestPruneWorkspacesLeavesCleanHistoryUntouched(t *testing.T) {
+	d := t.TempDir()
+	require.NoError(t, SaveHistory(d, History{Workspaces: []string{"open1", "open2"}, Revision: 4}))
+
+	require.NoError(t, PruneWorkspaces(d, map[string]bool{"open1": true, "open2": true, "unused": true}))
+
+	h, err := LoadHistory(d)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"open1", "open2"}, h.Workspaces)
+	assert.Equal(t, uint64(4), h.Revision)
+}
+
+func TestPruneWorkspacesClearsHistoryWhenNoWorkspaceIsOpen(t *testing.T) {
+	d := t.TempDir()
+	require.NoError(t, SaveHistory(d, History{Workspaces: []string{"closed1", "closed2"}}))
+
+	require.NoError(t, PruneWorkspaces(d, map[string]bool{}))
+
+	h, err := LoadHistory(d)
+	require.NoError(t, err)
+	assert.Empty(t, h.Workspaces)
+}
+
+func TestPruneWorkspacesNoopsWithoutStateDir(t *testing.T) {
+	require.NoError(t, PruneWorkspaces("", map[string]bool{"open": true}))
+}
+
 func TestSessionHistoryDirMigratesOnlyDefaultSessionHistory(t *testing.T) {
 	stateDir := t.TempDir()
 	legacy := History{Workspaces: []string{"current", "previous"}}
