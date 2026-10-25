@@ -75,16 +75,16 @@ func TestWatchWorkspaceEventsReconcilesDelayedProtocol20Replay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var history []string
-	err := WatchWorkspaceEvents(ctx, socketPath,
-		func(id string) error {
+	err := WatchWorkspaceEvents(ctx, socketPath, WorkspaceHooks{
+		Focused: func(id string) error {
 			history = recordHistoryVisit(history, id)
 			return nil
 		},
-		func(id string) error {
+		Closed: func(id string) error {
 			history = removeHistoryWorkspace(history, id)
 			return nil
 		},
-	)
+	})
 	_ = listener.Close()
 	require.NoError(t, err)
 	require.NoError(t, <-serverDone)
@@ -130,16 +130,16 @@ func TestWatchWorkspaceEventsPreservesInterruptedProtocol20Replay(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var history []string
-	err := WatchWorkspaceEvents(ctx, socketPath,
-		func(id string) error {
+	err := WatchWorkspaceEvents(ctx, socketPath, WorkspaceHooks{
+		Focused: func(id string) error {
 			history = recordHistoryVisit(history, id)
 			return nil
 		},
-		func(id string) error {
+		Closed: func(id string) error {
 			history = removeHistoryWorkspace(history, id)
 			return nil
 		},
-	)
+	})
 	_ = listener.Close()
 	require.NoError(t, err)
 	require.NoError(t, <-serverDone)
@@ -179,7 +179,7 @@ func TestWatchWorkspaceEventsRejectsPreSubscriptionProtocol(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := WatchWorkspaceEvents(ctx, socketPath, func(string) error { return nil }, func(string) error { return nil })
+	err := WatchWorkspaceEvents(ctx, socketPath, WorkspaceHooks{Focused: func(string) error { return nil }, Closed: func(string) error { return nil }})
 	require.ErrorContains(t, err, "requires Herdr protocol 20")
 	require.NoError(t, <-serverDone)
 }
@@ -258,16 +258,16 @@ func TestWatchWorkspaceEventsBuffersProtocol21EventsDuringProtocolProbe(t *testi
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	history := []string{"A"}
-	err := WatchWorkspaceEvents(ctx, socketPath,
-		func(id string) error {
+	err := WatchWorkspaceEvents(ctx, socketPath, WorkspaceHooks{
+		Focused: func(id string) error {
 			history = recordHistoryVisit(history, id)
 			return nil
 		},
-		func(id string) error {
+		Closed: func(id string) error {
 			history = removeHistoryWorkspace(history, id)
 			return nil
 		},
-	)
+	})
 	require.NoError(t, err)
 	require.NoError(t, <-serverDone)
 	assert.Equal(t, []string{"C", "B", "A"}, history)
@@ -308,16 +308,16 @@ func TestWatchWorkspaceEventsNoHistoryKeepsSnapshotWindowEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var got []string
-	err := WatchWorkspaceEvents(ctx, socketPath,
-		func(id string) error {
+	err := WatchWorkspaceEvents(ctx, socketPath, WorkspaceHooks{
+		Focused: func(id string) error {
 			got = append(got, id)
 			if len(got) == 2 {
 				cancel()
 			}
 			return nil
 		},
-		func(string) error { return nil },
-	)
+		Closed: func(string) error { return nil },
+	})
 	require.ErrorIs(t, err, context.Canceled)
 	require.NoError(t, <-serverDone)
 	assert.Equal(t, []string{"snapshot", "during-snapshot"}, got)
@@ -370,16 +370,16 @@ func TestWatchWorkspaceEventsReturnsWhenStreamCloses(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var got []string
-	err := WatchWorkspaceEvents(ctx, socketPath,
-		func(id string) error {
+	err := WatchWorkspaceEvents(ctx, socketPath, WorkspaceHooks{
+		Focused: func(id string) error {
 			got = append(got, "focus:"+id)
 			return nil
 		},
-		func(id string) error {
+		Closed: func(id string) error {
 			got = append(got, "close:"+id)
 			return nil
 		},
-	)
+	})
 	require.NoError(t, err)
 	require.NoError(t, <-serverDone)
 	assert.Equal(t, []string{"focus:before-close", "close:before-close"}, got)
@@ -416,7 +416,7 @@ func TestWatchWorkspaceEventsReportsCancellationDuringBootstrap(t *testing.T) {
 		serverDone <- nil
 	}()
 
-	err := WatchWorkspaceEvents(ctx, socketPath, func(string) error { return nil }, func(string) error { return nil })
+	err := WatchWorkspaceEvents(ctx, socketPath, WorkspaceHooks{Focused: func(string) error { return nil }, Closed: func(string) error { return nil }})
 	require.ErrorIs(t, err, context.Canceled)
 	require.NoError(t, <-serverDone)
 }
@@ -429,9 +429,103 @@ func TestWatchWorkspaceEventsReturnsWhenSocketUnavailable(t *testing.T) {
 	socketPath := filepath.Join(dir, "herdr.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err = WatchWorkspaceEvents(ctx, socketPath, func(string) error { return nil }, func(string) error { return nil })
+	err = WatchWorkspaceEvents(ctx, socketPath, WorkspaceHooks{Focused: func(string) error { return nil }, Closed: func(string) error { return nil }})
 	require.ErrorIs(t, err, syscall.ENOENT)
 	assert.ErrorContains(t, err, "connect to Herdr event stream")
+}
+
+func TestWatchWorkspaceEventsReconcilesBeforeRecordingFocus(t *testing.T) {
+	listener, socketPath := listenTestSocket(t)
+	serverDone := make(chan error, 1)
+	go func() {
+		stream, err := acceptRequest(listener, "events.subscribe")
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer func() { _ = stream.Close() }()
+		if err := json.NewEncoder(stream).Encode(map[string]any{"id": "herdr-sesh-history", "result": map[string]any{"type": "subscription_started"}}); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := serveCompatiblePing(listener, 21); err != nil {
+			serverDone <- err
+			return
+		}
+		snapshot, err := acceptRequest(listener, "session.snapshot")
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- json.NewEncoder(snapshot).Encode(snapshotResponse("A", "A", "B"))
+		_ = snapshot.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var order []string
+	var present map[string]bool
+	err := WatchWorkspaceEvents(ctx, socketPath, WorkspaceHooks{
+		Reconcile: func(ids map[string]bool) error {
+			order = append(order, "reconcile")
+			present = ids
+			return nil
+		},
+		Focused: func(id string) error {
+			order = append(order, "focus:"+id)
+			return nil
+		},
+		Closed: func(string) error { return nil },
+	})
+	_ = listener.Close()
+	require.NoError(t, err)
+	require.NoError(t, <-serverDone)
+	assert.Equal(t, []string{"reconcile", "focus:A"}, order)
+	assert.Equal(t, map[string]bool{"A": true, "B": true}, present)
+}
+
+func TestWatchWorkspaceEventsStopsWhenReconcileFails(t *testing.T) {
+	listener, socketPath := listenTestSocket(t)
+	serverDone := make(chan error, 1)
+	go func() {
+		stream, err := acceptRequest(listener, "events.subscribe")
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer func() { _ = stream.Close() }()
+		if err := json.NewEncoder(stream).Encode(map[string]any{"id": "herdr-sesh-history", "result": map[string]any{"type": "subscription_started"}}); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := serveCompatiblePing(listener, 21); err != nil {
+			serverDone <- err
+			return
+		}
+		snapshot, err := acceptRequest(listener, "session.snapshot")
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer func() { _ = snapshot.Close() }()
+		serverDone <- json.NewEncoder(snapshot).Encode(snapshotResponse("A", "A"))
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	focused := false
+	err := WatchWorkspaceEvents(ctx, socketPath, WorkspaceHooks{
+		Reconcile: func(map[string]bool) error { return errors.New("history unavailable") },
+		Focused: func(string) error {
+			focused = true
+			return nil
+		},
+		Closed: func(string) error { return nil },
+	})
+	_ = listener.Close()
+	require.ErrorContains(t, err, "history unavailable")
+	require.NoError(t, <-serverDone)
+	assert.False(t, focused, "focus must wait for a successful reconcile")
 }
 
 func listenTestSocket(t *testing.T) (net.Listener, string) {

@@ -872,6 +872,71 @@ func TestLastFocusesPreviousWorkspaceAndRotatesHistory(t *testing.T) {
 	assert.Equal(t, want, h.Workspaces)
 }
 
+func TestLastDropsClosedWorkspacesFromHistory(t *testing.T) {
+	d := t.TempDir()
+	stateDir := filepath.Join(d, "state")
+	require.NoError(t, state.SaveHistory(stateDir, state.History{Workspaces: []string{"current", "dead", "previous"}}))
+	logPath := filepath.Join(d, "herdr.log")
+	configureHerdrScript(t, fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$*" >> %q
+case "$3" in
+dead) printf '{"error":{"code":"workspace_not_found","message":"workspace dead not found"}}\n' >&2; exit 1 ;;
+esac
+exit 0
+`, logPath))
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", stateDir)
+	t.Setenv("HERDR_SOCKET_PATH", "")
+	t.Setenv("HERDR_WORKSPACE_ID", "current")
+
+	a := &App{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}
+	require.NoError(t, a.Run(context.Background(), []string{"last"}))
+
+	//nolint:gosec // logPath is a test-owned temp file.
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Equal(t, "workspace focus dead\nworkspace focus previous", strings.TrimSpace(string(log)))
+	h, err := state.LoadHistory(stateDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"previous", "current"}, h.Workspaces)
+}
+
+func TestLastReportsNoPreviousWorkspaceAfterDroppingClosedOnes(t *testing.T) {
+	d := t.TempDir()
+	stateDir := filepath.Join(d, "state")
+	require.NoError(t, state.SaveHistory(stateDir, state.History{Workspaces: []string{"current", "dead"}}))
+	configureHerdrScript(t, `#!/bin/sh
+printf '{"error":{"code":"workspace_not_found","message":"workspace dead not found"}}\n' >&2
+exit 1
+`)
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", stateDir)
+	t.Setenv("HERDR_SOCKET_PATH", "")
+	t.Setenv("HERDR_WORKSPACE_ID", "current")
+
+	a := &App{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}
+	err := a.Run(context.Background(), []string{"last"})
+	require.ErrorContains(t, err, "no previous workspace recorded")
+	h, err := state.LoadHistory(stateDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"current"}, h.Workspaces)
+}
+
+func TestLastKeepsHistoryOnUnrelatedFocusError(t *testing.T) {
+	d := t.TempDir()
+	stateDir := filepath.Join(d, "state")
+	require.NoError(t, state.SaveHistory(stateDir, state.History{Workspaces: []string{"current", "previous"}}))
+	configureHerdrScript(t, "#!/bin/sh\nprintf 'boom' >&2\nexit 1\n")
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", stateDir)
+	t.Setenv("HERDR_SOCKET_PATH", "")
+	t.Setenv("HERDR_WORKSPACE_ID", "current")
+
+	a := &App{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}
+	err := a.Run(context.Background(), []string{"last"})
+	require.ErrorContains(t, err, "boom")
+	h, err := state.LoadHistory(stateDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"current", "previous"}, h.Workspaces)
+}
+
 func TestPluginManifestStartsHistoryWatcherForRuntimeLifecycleEvents(t *testing.T) {
 	//nolint:gosec // The manifest is a repository-owned test fixture.
 	b, err := os.ReadFile("../../herdr-plugin.toml")
@@ -1223,7 +1288,9 @@ func TestPluginWatchHistoryReleasesElectionWhenServerRestarts(t *testing.T) {
 		newDone <- (&App{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}).Run(ctx, []string{"plugin", "watch-history"})
 	}()
 	receiveStream(t, newStreams)
-	waitForHistory(t, historyDir, "new", "old")
+	// The restarted server has only "new": reconciliation drops "old", which is
+	// exactly the stale entry that used to survive a restart.
+	waitForHistory(t, historyDir, "new")
 	cancel()
 	require.ErrorIs(t, <-newDone, context.Canceled)
 }
@@ -1440,14 +1507,14 @@ func TestPluginWatchHistoryPreservesFocusOrderThroughLockContention(t *testing.T
 	}
 	watchDone := make(chan error, 1)
 	go func() {
-		watchDone <- herdr.WatchWorkspaceEvents(ctx, socketPath,
-			func(workspaceID string) error {
+		watchDone <- herdr.WatchWorkspaceEvents(ctx, socketPath, herdr.WorkspaceHooks{
+			Focused: func(workspaceID string) error {
 				return retry(func() error { return state.Record(historyDir, workspaceID) })
 			},
-			func(workspaceID string) error {
+			Closed: func(workspaceID string) error {
 				return retry(func() error { return state.RemoveWorkspace(historyDir, workspaceID) })
 			},
-		)
+		})
 	}()
 
 	select {
@@ -1525,7 +1592,7 @@ func runMarkerWatcher(t *testing.T, history ...string) (historyDir string, event
 
 	feed := make(chan map[string]any)
 	serverDone := make(chan error, 1)
-	go func() { serverDone <- serveFedHistoryStream(listener, feed) }()
+	go func() { serverDone <- serveFedHistoryStream(listener, feed, history...) }()
 
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", stateDir)
 	t.Setenv("HERDR_SOCKET_PATH", socketPath)
@@ -1545,8 +1612,8 @@ func runMarkerWatcher(t *testing.T, history ...string) (historyDir string, event
 	}
 }
 
-func serveFedHistoryStream(listener net.Listener, feed <-chan map[string]any) error {
-	stream, err := serveHistoryBootstrap(listener, "")
+func serveFedHistoryStream(listener net.Listener, feed <-chan map[string]any, workspaces ...string) error {
+	stream, err := serveHistoryBootstrap(listener, "", workspaces...)
 	if err != nil {
 		return err
 	}
@@ -1562,7 +1629,7 @@ func serveFedHistoryStream(listener net.Listener, feed <-chan map[string]any) er
 
 // serveHistoryBootstrap answers a watcher's subscribe, ping, and snapshot
 // requests and returns the open event stream.
-func serveHistoryBootstrap(listener net.Listener, focusedID string) (net.Conn, error) {
+func serveHistoryBootstrap(listener net.Listener, focusedID string, workspaces ...string) (net.Conn, error) {
 	stream, err := listener.Accept()
 	if err != nil {
 		return nil, err
@@ -1594,9 +1661,16 @@ func serveHistoryBootstrap(listener net.Listener, focusedID string) (net.Conn, e
 		_ = stream.Close()
 		return nil, err
 	}
+	if focusedID != "" {
+		workspaces = append([]string{focusedID}, workspaces...)
+	}
+	listed := make([]map[string]any, 0, len(workspaces))
+	for _, workspaceID := range workspaces {
+		listed = append(listed, map[string]any{"workspace_id": workspaceID})
+	}
 	if err := json.NewEncoder(snapshot).Encode(map[string]any{
 		"id":     "herdr-sesh-history-snapshot",
-		"result": map[string]any{"type": "session_snapshot", "snapshot": map[string]any{"focused_workspace_id": focusedID}},
+		"result": map[string]any{"type": "session_snapshot", "snapshot": map[string]any{"focused_workspace_id": focusedID, "workspaces": listed}},
 	}); err != nil {
 		_ = stream.Close()
 		return nil, err
@@ -1605,14 +1679,14 @@ func serveHistoryBootstrap(listener net.Listener, focusedID string) (net.Conn, e
 }
 
 // startHistoryServer serves one watcher bootstrap and yields its event stream.
-func startHistoryServer(t *testing.T, socketPath, focusedID string) <-chan net.Conn {
+func startHistoryServer(t *testing.T, socketPath, focusedID string, workspaces ...string) <-chan net.Conn {
 	t.Helper()
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
 	streams := make(chan net.Conn, 1)
 	go func() {
-		stream, err := serveHistoryBootstrap(listener, focusedID)
+		stream, err := serveHistoryBootstrap(listener, focusedID, workspaces...)
 		if err != nil {
 			close(streams)
 			return
